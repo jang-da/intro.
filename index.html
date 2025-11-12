@@ -50,16 +50,24 @@
         import { UnrealBloomPass } from 'https://unpkg.com/three/examples/jsm/postprocessing/UnrealBloomPass.js';
 
         // --- 전역 변수 설정 ---
-        let scene, camera, renderer, composer, bloomPass, tunnel;
+        let scene, camera, renderer, composer, bloomPass, tunnel, path;
         let font; // 로드된 폰트 저장
         const textObjects = []; // 텍스트 객체들
         const tunnelSegments = 100; // 터널의 길이 (세그먼트 수)
         const segmentLength = 2; // 각 세그먼트의 길이
         const tunnelLength = tunnelSegments * segmentLength;
+
+        let cameraProgress = 0; // 카메라의 터널 내 진행 상태 (0 ~ 1)
+        // --- 애니메이션 관련 상수 ---
         const cameraSpeed = 0.15;
+        const textRotationSpeed = 0.005;
+        let isFadingOut = false; // 페이드아웃 상태 플래그
 
         // --- 초기화 함수 ---
+        // --- 로딩 매니저 설정 ---
         function init() {
+            isFadingOut = false; // 초기화 시 플래그 리셋
+            cameraProgress = 0; // 진행 상태 초기화
             // 1. Scene (장면) 설정
             scene = new THREE.Scene();
             scene.fog = new THREE.Fog(0x000000, 1, 50); // 안개 효과 (가까울수록 잘 보임)
@@ -82,25 +90,37 @@
             const ambientLight = new THREE.AmbientLight(0x404040, 2); // 은은한 전체 조명
             scene.add(ambientLight);
 
+            // 5. 로딩 매니저 설정
+            const manager = new THREE.LoadingManager();
+            manager.onLoad = () => {
+                // 모든 로딩이 완료되면 애니메이션 시작
+                console.log('모든 리소스 로딩 완료!');
+                animate(); 
+            };
+
             // 5. 터널 생성 (TubeGeometry)
-            createTunnel();
+            createTunnel(manager);
 
             // 6. 포스트 프로세싱 (블룸 효과) 설정
             setupPostProcessing();
 
             // 7. 3D 텍스트 로드 및 생성
-            loadFontAndCreateText();
+            loadFontAndCreateText(manager);
             
             // 8. 창 크기 조절 이벤트 리스너
             window.addEventListener('resize', onWindowResize);
         }
 
         // --- 터널 생성 함수 ---
-        function createTunnel() {
-            // 터널의 경로 (직선)
-            const path = new THREE.LineCurve3(
-                new THREE.Vector3(0, 0, 0),
-                new THREE.Vector3(0, 0, -tunnelLength) // Z축 방향으로 길게
+        function createTunnel(manager) {
+            // 터널의 경로 (S자 곡선)
+            path = new THREE.CatmullRomCurve3( // 전역 변수 path에 할당
+                [
+                    new THREE.Vector3(0, 0, 10),
+                    new THREE.Vector3(10, 5, -tunnelLength * 0.25),
+                    new THREE.Vector3(-10, -5, -tunnelLength * 0.75),
+                    new THREE.Vector3(0, 0, -tunnelLength)
+                ]
             );
             
             // 터널 지오메트리
@@ -112,10 +132,20 @@
                 false          // 닫힘 여부
             );
             
-            // 터널 재질 (와이어프레임)
+            // 텍스처 로더 생성
+            const textureLoader = new THREE.TextureLoader(manager);
+            // '회로 기판' 같은 느낌의 텍스처 이미지 로드
+            const texture = textureLoader.load('https://threejs.org/examples/textures/hardwood2_diffuse.jpg', (tex) => {
+                // 텍스처가 길이를 따라 반복되도록 설정
+                tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+                // 텍스처 반복 횟수 설정 (가로 5번, 세로 50번)
+                tex.repeat.set(5, 50);
+            });
+
+            // 터널 재질 (텍스처 매핑)
             const material = new THREE.MeshBasicMaterial({
-                color: 0x00ff00,    // '코드' 느낌의 초록색
-                wireframe: true,
+                map: texture, // 불러온 텍스처를 재질에 적용
+                // wireframe: false, // 텍스처를 보려면 wireframe은 false여야 합니다.
                 side: THREE.DoubleSide // 터널 안쪽에서도 보이도록 설정
             });
             
@@ -124,8 +154,8 @@
         }
 
         // --- 폰트 로드 및 텍스트 생성 함수 ---
-        function loadFontAndCreateText() {
-            const fontLoader = new FontLoader();
+        function loadFontAndCreateText(manager) {
+            const fontLoader = new FontLoader(manager);
             // three.js 예제 폰트 (JSON) 사용
             fontLoader.load('https://unpkg.com/three/examples/fonts/helvetiker_regular.typeface.json', (loadedFont) => {
                 font = loadedFont;
@@ -186,30 +216,39 @@
         function animate() {
             requestAnimationFrame(animate); // 매 프레임마다 animate 함수 호출
 
-            // 1. 카메라 이동 (터널 안으로 전진)
-            camera.position.z -= cameraSpeed;
+            // 페이드아웃이 아닐 때만 카메라와 텍스트를 움직입니다.
+            if (!isFadingOut) {
+                // 1. 카메라를 터널 경로에 따라 이동
+                cameraProgress += 0.0005; // 진행 속도 조절
+                if (cameraProgress > 1) cameraProgress = 1;
 
-            // 2. 텍스트 회전 (선택 사항)
-            textObjects.forEach(text => {
-                text.rotation.y += 0.005;
-            });
+                // 현재 진행도에 맞는 경로상의 위치를 가져옴
+                const newPosition = path.getPointAt(cameraProgress);
+                camera.position.copy(newPosition);
 
-            // 3. 터널의 끝에 도달했을 때 처리
-            if (camera.position.z < -tunnelLength + 20) {
-                // 밝은 빛이 터져나오는 효과 (블룸 강도를 높임)
-                bloomPass.strength += 0.05;
+                // 카메라가 다음 지점을 바라보도록 설정 (더 자연스러운 움직임)
+                const lookAtPosition = path.getPointAt((cameraProgress + 0.01) % 1);
+                camera.lookAt(lookAtPosition);
 
-                // 화면을 하얗게 덮음 (페이드아웃)
-                document.getElementById('overlay').style.opacity = '1';
-                
-                // (실제 구현 시) 페이드아웃이 완료되면 메인 페이지로 이동
-                // setTimeout(() => {
-                //     window.location.href = 'YOUR_MAIN_PAGE.html';
-                // }, 1000); 
+                // 2. 텍스트 회전
+                textObjects.forEach(text => {
+                    text.rotation.y += textRotationSpeed;
+                });
+
+                // 3. 터널의 끝에 도달했을 때 페이드아웃 시작
+                if (cameraProgress >= 0.95) { // 경로의 95% 지점에 도달하면 페이드아웃
+                    isFadingOut = true;
+                    // 화면을 하얗게 덮음 (페이드아웃)
+                    document.getElementById('overlay').style.opacity = '1';
+                    
+                    // (실제 구현 시) 페이드아웃이 완료되면 메인 페이지로 이동
+                    setTimeout(() => {
+                        window.location.href = 'https://github.com/jang-da/intro./settings/pages'; // 여기에 실제 메인 페이지 파일명이나 주소를 입력하세요.
+                    }, 1000); // 1초(페이드아웃 시간) 후에 페이지 이동
+                }
             }
-            
-            // 4. 렌더링 (composer를 통해 렌더링해야 블룸 효과 적용)
-            // renderer.render(scene, camera); // <- 이것 대신
+
+            // 4. 렌더링은 매 프레임 수행합니다.
             composer.render(); // <- 이것 사용
         }
 
@@ -229,8 +268,6 @@
 
         // --- 실행 ---
         init();
-        animate();
-
     </script>
 </body>
 </html>
